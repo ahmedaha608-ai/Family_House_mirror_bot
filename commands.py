@@ -9,15 +9,14 @@ from pyrogram.types import (
     CallbackQuery
 )
 
-# تعديل الاستدعاء ليقرأ من المجلد الرئيسي مباشرة لتجنب خطأ ModuleNotFoundError
-from __init__ import app
+# التعديل هنا: الاستدعاد أصبح من ملف config لمنع الـ Crash والـ Loop
+from config import app
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# قواميس لحفظ إعدادات المستخدمين في ذاكرة السيرفر مؤقتاً
-user_video_format = {}  # الصيغة الافتراضية MP4
-user_backgrounds = {}   # الخلفية الافتراضية للمخدم
+user_video_format = {}  
+user_backgrounds = {}   
 quality_cache = {}
 
 # ======================
@@ -148,8 +147,6 @@ async def leech(_, message: Message):
     msg = await message.reply_text("📥 Downloading...")
 
     output = f"{DOWNLOAD_DIR}/%(title)s.%(ext)s"
-    
-    # إجبار التنسيق المطلوب عن طريق أداة yt-dlp
     cmd = f'yt-dlp -f "bv+ba/b" --recode-video {target_format} -o "{output}" "{url}"'
 
     process = await asyncio.create_subprocess_shell(cmd)
@@ -162,7 +159,6 @@ async def leech(_, message: Message):
     filename = files[0]
     filepath = os.path.join(DOWNLOAD_DIR, filename)
 
-    # التحقق وتعديل الامتداد برمجياً للتأكيد
     base, ext = os.path.splitext(filepath)
     if ext.lower() != f".{target_format}":
         new_filepath = f"{base}.{target_format}"
@@ -171,7 +167,6 @@ async def leech(_, message: Message):
 
     await msg.edit(f"📤 Uploading as {target_format.upper()} video...")
 
-    # الرفع الإجباري كفيديو تفاعلي وليس كمستند
     try:
         await message.reply_video(video=filepath, caption=f"🎬 الصيغة: {target_format.upper()}")
     except Exception as e:
@@ -183,7 +178,7 @@ async def leech(_, message: Message):
 
 
 # ======================
-# YOUTUBE LEECH WITH QUALITY EXTRESCTION
+# YOUTUBE LEECH WITH QUALITY EXTRACTION
 # ======================
 @app.on_message(filters.command("ytdlleech"))
 async def ytdlleech(_, message: Message):
@@ -239,8 +234,6 @@ async def quality_download(_, query: CallbackQuery):
     await query.message.edit("📥 Downloading selected quality...")
 
     output = f"{DOWNLOAD_DIR}/%(title)s.%(ext)s"
-    
-    # دمج الجودة المختارة مع معالجة وتحويل الصيغة المفضلة للمستخدم
     cmd = f'yt-dlp -f {fmt} --recode-video {target_format} -o "{output}" "{url}"'
 
     process = await asyncio.create_subprocess_shell(cmd)
@@ -277,5 +270,4 @@ async def quality_download(_, query: CallbackQuery):
 async def qb(_, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/qb magnet_link")
-    
     await message.reply_text("📥 **بدء معالجة وإضافة رابط التورنت...**")
