@@ -6,7 +6,7 @@ from pyrogram.types import (
     CallbackQuery
 )
 
-from bot import app
+from __init__ import app
 
 import yt_dlp
 import os
