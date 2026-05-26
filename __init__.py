@@ -8,6 +8,8 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-from bot import commands
+import commands
+
+print("✅ Bot Started")
 
 app.run()
