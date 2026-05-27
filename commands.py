@@ -32,11 +32,13 @@ quality_cache = {}
 active_tasks = {}         
 
 # =========================================================
-# دالة ذكية لفك روابط مواقع الرفع (مثل Krakenfiles) برمجياً
+# دالة ذكية لفك الروابط واستخراج الاسم الحقيقي من عنوان الصفحة
 # =========================================================
-def bypass_file_sharing_url(url):
-    # إذا كان الرابط من موقع krakenfiles ويشير لصفحة الويب
-    if "krakenfiles.com/view/" in url or "krakenfiles.com/download/" in url:
+def bypass_and_get_clean_title(url):
+    default_title = ""
+    target_url = url
+    
+    if "krakenfiles.com" in url:
         try:
             parsed_url = urllib.parse.urlparse(url)
             conn = http.client.HTTPSConnection(parsed_url.netloc, timeout=10)
@@ -48,45 +50,58 @@ def bypass_file_sharing_url(url):
             html_content = response.read().decode('utf-8', errors='ignore')
             conn.close()
             
-            # البحث عن رابط الميديا الحقيقي داخل كود الصفحة (data-url أو src أو الروابط المباشرة)
+            # 1. اقتناص التسمية الحقيقية من وسم الـ <title> الخاص بالصفحة الأصلية
+            title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
+            if title_match:
+                # تنظيف الكلمات الثابتة للموقع من العنوان
+                raw_page_title = title_match.group(1)
+                raw_page_title = re.sub(r'(?i)-\s*KrakenFiles\.com', '', raw_page_title)
+                raw_page_title = re.sub(r'(?i)Free\s*File\s*Sharing', '', raw_page_title)
+                default_title = raw_page_title.strip()
+            
+            # 2. استخراج رابط التحميل المخفي داخل الصفحة
             matches = re.findall(r'href=["\'](https://[^"\']+?\.mp4[^"\']*?)["\']', html_content)
             if not matches:
                 matches = re.findall(r'src=["\'](https://[^"\']+?\.mp4[^"\']*?)["\']', html_content)
             if not matches:
-                # محاولة صيد أزرار التحميل بداخل الصفحة
                 download_token = re.search(r'data-url=["\']([^"\']+?)["\']', html_content)
                 if download_token:
                     token_url = download_token.group(1)
                     if token_url.startswith("//"):
                         token_url = "https:" + token_url
-                    return token_url
-            
+                    target_url = token_url
             if matches:
-                return matches[0]
+                target_url = matches[0]
+                
         except Exception as e:
-            print(f"Bypass pattern error: {e}")
+            print(f"Error in bypass and title extraction: {e}")
             
-    return url
+    return target_url, default_title
 
 # ==========================================
-# دالة ذكية ومتقدمة لتنظيف المسميات المستخرجة
+# دالة ذكية ومطورة لتنظيف وتنسيق المسميات العربية والأجنبية
 # ==========================================
 def clean_filename_title(raw_title):
     if not raw_title:
         return "مقطع مرئي مجهول الاسم"
     
+    # إزالة امتدادات الملفات لو وجدت بالاسم
     for ext in [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".html", ".htm"]:
         raw_title = re.sub(re.escape(ext), "", raw_title, flags=re.IGNORECASE)
         
+    # تنظيف شامل لإعلانات المواقع لتظهر التسمية نقية تماماً (مثل: قلب مفتوح S01 E01)
     junk_patterns = [
         r'\[.*?\]', r'\(.*?\)', r'\{.*?\}',
-        r'(?i)arabseed', r'(?i)tuktukcima', r'(?i)cima', r'(?i)egybest', r'(?i)wecima', 
+        r'(?i)arabseed', r'(?i)tuktukcima', r'(?i)cima', r'(?i)egybest', r'(?i)wecima', r'(?i)mycima', r'(?i)vod',
         r'عرب\s*سيد', r'توك\s*توك\s*سيما', r'ماي\s*سيما', r'ايجي\s*بست', r'موقع', r'تحميل', r'مشاهدة', r'فيلم', r'كامل', r'مترجم'
     ]
     for pattern in junk_patterns:
         raw_title = re.sub(pattern, "", raw_title)
         
+    # استبدال النقاط والخطوط الزائدة بفراغات منسقة
     raw_title = raw_title.replace(".", " ").replace("-", " ").replace("_", " ").replace("+", " ")
+    
+    # تنظيف الفراغات المزدوجة
     clean_title = re.sub(r'\s+', ' ', raw_title).strip()
     
     return clean_title if clean_title else "مقطع مرئي غير مسمى"
@@ -193,7 +208,6 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
-    # ربط بروتوكول aria2c الصارم بالتنفيذ
     ydl_opts['external_downloader'] = 'aria2c'
     ydl_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16', '-k', '1M', '--allow-overwrite=true']
     
@@ -210,10 +224,10 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
     text = (
-        "✅ **Qb Leech Bot Online (Aria2c Bypass Engine)**\n\n"
+        "✅ **Qb Leech Bot Online (Aria2c Name-Fix Engine)**\n\n"
         "**الأوامر المتاحة والمصلحة بالكامل:**\n"
-        "🔹 /leech `[الرابط]` - سحب سريع متعدد الخيوط للأفلام والمسلسلات\n"
-        "🔹 /ytdlleech `[الرابط]` - تنزيل المنصات المتعددة واختيار الجودات\n"
+        "🔹 /leech `[الرابط]` - سحب سريع مع جلب الاسم الحقيقي الذكي\n"
+        "🔹 /ytdlleech `[الرابط]` - تنزيل المنصات واختيار الجودات\n"
         "🗜️ /compress `[بالرد]` - ضغط فيديو تلقائياً وتوفير المساحة\n"
         "⚙️ /settings - لوحة التحكم الشاملة بالتنسيقات وأبعاد المعالجة\n"
     )
@@ -286,52 +300,52 @@ async def leech(_, message: Message):
     active_tasks[task_key] = "running"
 
     buttons = [[InlineKeyboardButton("❌ إلغاء وإغلاق العملية", callback_data=f"cancel_{task_key}")]]
-    msg = await message.reply_text("🔍 جاري فحص الرابط وفك تشفير وحماية حزم الـ HTML برمجياً...", reply_markup=InlineKeyboardMarkup(buttons))
+    msg = await message.reply_text("🔍 جاري قراءة عنوان الصفحة واقتناص اسم المادة الفعلي...", reply_markup=InlineKeyboardMarkup(buttons))
 
-    # تمرير الرابط عبر الفلتر الذكي لاستخراج داتا الفيديو من مواقع الرفع
-    url = bypass_file_sharing_url(raw_url)
+    # فك الرابط واقتناص الاسم من العنوان الأصلي للموقع
+    url, page_extracted_title = bypass_and_get_clean_title(raw_url)
 
-    extracted_title = ""
-    try:
-        ydl_opts_meta = {'quiet': True, 'no_warnings': True, 'nocheckcertificate': True}
-        with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
-            info = ydl.extract_info(url, download=False)
-            extracted_title = info.get('title', '')
-    except Exception as e:
-        print(f"Meta extraction fallback: {e}")
+    if not page_extracted_title:
+        try:
+            ydl_opts_meta = {'quiet': True, 'no_warnings': True, 'nocheckcertificate': True}
+            with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
+                info = ydl.extract_info(url, download=False)
+                page_extracted_title = info.get('title', '')
+        except:
+            pass
 
-    if not extracted_title:
+    if not page_extracted_title:
         try:
             decoded_url = urllib.parse.unquote(raw_url)
-            clean_name = decoded_url.split('/')[-1].split('?')[0]
-            extracted_title = clean_name
+            page_extracted_title = decoded_url.split('/')[-1].split('?')[0]
         except:
-            extracted_title = f"مسلسل_أو_فيلم_{message.id}"
+            page_extracted_title = f"مسلسل_أو_فيلم_{message.id}"
 
-    real_title = clean_filename_title(extracted_title)
+    # تنظيف الاسم النهائي ليصبح مطابقاً لمثالك (مثل: قلب مفتوح S01 E01)
+    real_title = clean_filename_title(page_extracted_title)
+    
     filename = f"video_{message.id}.{target_format}"
     filepath = os.path.join(DOWNLOAD_DIR, filename)
 
-    await msg.edit_text(f"🎬 **تم فك شفرة البيانات بنجاح:**\n🎯 `{real_title}`\n\nجاري السحب الفعلي التوربو للميديا الآن...")
+    await msg.edit_text(f"🎬 **الاسم المعتمد للميديا:**\n🎯 `{real_title}`\n\nجاري السحب الصاروخي للملف الحقيقي...")
     success = await download_direct_mp4_with_progress(url, filepath, msg, task_key)
 
     if active_tasks.get(task_key) == "cancelled":
         if os.path.exists(filepath): os.remove(filepath)
         return
 
-    # فحص صارم لحجم الملف لمنع رفع صفحات الـ Html الـ 1 كيلوبايت الفارغة
-    if not success or not os.path.exists(filepath) or os.path.getsize(filepath) < 102400: # أقل من 100 كيلوبايت يعني خطأ
+    if not success or not os.path.exists(filepath) or os.path.getsize(filepath) < 102400:
         if os.path.exists(filepath): os.remove(filepath)
-        return await msg.edit_text("❌ **فشل سحب الفيديو الفعلي:** الرابط الممرر هو صفحة ويب محمية ولم نتمكن من استخراج تدفق الفيديو المباشر منها تلقائياً.")
+        return await msg.edit_text("❌ **فشل سحب الفيديو الفعلي:** الرابط الممرر غير صحيح أو انتهت صلاحية الجلسة.")
 
-    await msg.edit_text("🖼️ جاري قراءة فريمات المقطع وتوليد غلاف البوستر عبر Ffmpeg...")
+    await msg.edit_text("🖼️ جاري توليد بوستر الغلاف الذكي...")
     meta = await get_video_metadata(filepath)
     
     thumb_filename = f"thumb_{message.id}.jpg"
     thumb_path = os.path.join(DOWNLOAD_DIR, thumb_filename)
     generated_thumb = await generate_thumbnail(filepath, thumb_path)
 
-    await msg.edit_text("📤 اكتمل السحب الفعلي للملف! جاري الرفع الآن إلى تليجرام...")
+    await msg.edit_text("📤 اكتمل السحب! جاري الرفع بالاسم الصحيح الحقيقي...")
     
     start_upload = time.time()
     try:
@@ -343,8 +357,7 @@ async def leech(_, message: Message):
             duration=meta["duration"],                       
             caption=(
                 f"🎬 **اسم المسلسل / الفيلم:**\n`{real_title}`\n\n"
-                f"🔗 **رابط الصفحة الأصلي:**\n`{raw_url}`\n\n"
-                f"📦 المحرك المستخدم: `Bypass HTML + Aria2c`"
+                f"📦 المحرك المستخدم: `Bypass Engine + Aria2c`"
             ),
             progress=progress_bar,
             progress_args=(msg, start_upload, task_key, "رفع للمشاهدة 📤")
@@ -448,7 +461,7 @@ async def ytdlleech(_, message: Message):
     raw_url = message.command[1]
     msg = await message.reply_text("🔍 جاري فحص ومصادقة جودات المنصة المتاحة...")
     
-    url = bypass_file_sharing_url(raw_url)
+    url, page_extracted_title = bypass_and_get_clean_title(raw_url)
     try:
         ydl_opts = {
             'skip_download': True, 
@@ -459,6 +472,8 @@ async def ytdlleech(_, message: Message):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = info.get("formats", [])
+            if not page_extracted_title:
+                page_extracted_title = info.get("title", "")
 
         buttons = []
         seen_resolutions = set()
@@ -471,17 +486,16 @@ async def ytdlleech(_, message: Message):
                     note = f.get("format_note") or f"{res}p"
                     ext = f.get("ext", "mp4")
                     key = f"{message.id}_{fid}"
-                    quality_cache[key] = {"url": url, "format": fid, "raw_url": raw_url}
+                    quality_cache[key] = {"url": url, "format": fid, "raw_url": raw_url, "title": page_extracted_title}
                     buttons.append([InlineKeyboardButton(text=f"🎬 جودة: {note} ({ext.upper()})", callback_data=f"yt_{key}")])
 
         if not buttons:
             key = f"{message.id}_best"
-            quality_cache[key] = {"url": url, "format": "best", "raw_url": raw_url}
+            quality_cache[key] = {"url": url, "format": "best", "raw_url": raw_url, "title": page_extracted_title}
             buttons.append([InlineKeyboardButton(text="🎬 تحميل تلقائي بأفضل جودة", callback_data=f"yt_{key}")])
         await msg.edit("🎬 **اختر الجودة المطلوبة لبدء السحب والرفع:**", reply_markup=InlineKeyboardMarkup(buttons))
     except Exception as e:
-        await msg.edit("🎬 **لم يتم العثور على مصفوفة جودات متعددة، جاري التحويل التلقائي للسحب التوربو المباشر...**")
-        # إذا فشل يوتيوب دي إل في جلب الجودات، يتم تحويله تلقائياً لأمر leech المباشر الذكي
+        await msg.edit("🎬 **جاري التحويل التلقائي للسحب عبر محرك العناوين الحقيقي المباشر...**")
         message.command = ["leech", raw_url]
         await leech(_, message)
 
@@ -500,6 +514,7 @@ async def quality_download(_, query: CallbackQuery):
     url = data["url"]
     fmt = data["format"]
     raw_url = data["raw_url"]
+    cached_title = data["title"]
 
     task_key = f"yt_{query.message.id}"
     active_tasks[task_key] = "running"
@@ -561,8 +576,7 @@ async def quality_download(_, query: CallbackQuery):
     await query.message.edit("📤 جاري بدء رفع الميديا الفعلية...")
     start_upload = time.time()
     try:
-        raw_display_name = os.path.basename(filepath)
-        clean_display_name = clean_filename_title(raw_display_name)
+        clean_display_name = clean_filename_title(cached_title)
 
         await query.message.reply_video(
             video=filepath,
