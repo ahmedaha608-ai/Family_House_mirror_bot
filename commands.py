@@ -44,6 +44,28 @@ quality_cache = {}
 active_tasks = {}         
 
 # =========================================================
+# ✅ Safe Progress System
+# =========================================================
+def safe_progress(current, total, reply_msg, start_time, task_key, mode):
+    try:
+        loop = asyncio.get_running_loop()
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                progress_bar(
+                    current,
+                    total,
+                    reply_msg,
+                    start_time,
+                    task_key,
+                    mode
+                )
+            )
+        )
+    except:
+        pass
+
+
+# =========================================================
 # 🔍 المحرك الاحترافي المطور لتخطي حماية وسحب ميديا Krakenfiles
 # =========================================================
 def bypass_and_get_clean_title(url):
@@ -201,7 +223,7 @@ async def progress_bar(current, total, reply_msg, start_time, task_key, mode="ر
         status = get_server_status()
         
         progress_text = (
-            f"⚡ **جاري عملية الـ {mode}...**\n\n"
+            f"⚡ **جاري {mode}**\n\n"
             f"📊 `[{bar}]` {percentage:.1f}%\n"
             f"📦 الحجم: `{current_mb:.1f} MB` / `{total_mb:.1f} MB`\n"
             f"💾 الجيجا: `{downloaded_gb:.2f} GB` / `{total_gb:.2f} GB`\n"
