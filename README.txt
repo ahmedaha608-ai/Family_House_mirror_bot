@@ -1,6 +1,13 @@
-Professional Telegram Leech Bot
-- Advanced Status System
-- Aria2 Turbo Download
-- Quality Compressor Menu
+FINAL MERGED PROJECT
+====================
+
+Features Included:
+- Leech System
+- YTLeech
+- Advanced Progress Bar
+- Compressor Quality Menu
 - HEVC x265 Compression
-- Railway/Replit Ready
+- Turbo Download
+- Railway Optimization
+- Retry System
+- Safe Asyncio Hooks
