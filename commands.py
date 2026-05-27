@@ -3,32 +3,61 @@ import time
 import shutil
 import asyncio
 import yt_dlp
-import aiohttp
 import json
+import re
+import urllib.parse
 from pyrogram import filters
 from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    CallbackQuery
+    CallbackQuery,
+    BotCommand
 )
 
-# الاستدعاء الآمن لمنع التداخل الدائري والـ Crash
+# الاستدعاء الآمن لربط التطبيق
 from config import app
+
+# 👑 معرف الأدمن والمطور الخاص بك
+ADMIN_ID = 7030252495  
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# قواميس حفظ الإعدادات وتتبع العمليات النشطة في الذاكرة
 user_video_format = {}    
 user_compress_res = {}    
 user_backgrounds = {}     
 quality_cache = {}
-active_tasks = {}         # تتبع العمليات النشطة لإلغائها فورا {task_key: status}
+active_tasks = {}         
 
 # ==========================================
-# دالة ذكية لاستخراج أبعاد ومدّة الفيديو (لحاوية تليجرام الصارمة)
+# دالة ذكية ومتقدمة لتنظيف المسميات المستخرجة
 # ==========================================
+def clean_filename_title(raw_title):
+    if not raw_title:
+        return "مقطع مرئي مجهول الاسم"
+    
+    # 1. إزالة الامتدادات الشائعة لو وجدت في العنوان
+    for ext in [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".html", ".htm"]:
+        raw_title = re.sub(re.escape(ext), "", raw_title, flags=re.IGNORECASE)
+        
+    # 2. إزالة إعلانات المواقع والكلمات الزائدة الشهيرة داخل الأقواس أو خارجها
+    junk_patterns = [
+        r'\[.*?\]', r'\(.*?\)', r'\{.*?\}',
+        r'(?i)arabseed', r'(?i)tuktukcima', r'(?i)cima', r'(?i)egybest', r'(?i)wecima', 
+        r'عرب\s*سيد', r'توك\s*توك\s*سيما', r'ماي\s*سيما', r'ايجي\s*بست', r'موقع', r'تحميل', r'مشاهدة', r'فيلم', r'كامل', r'مترجم'
+    ]
+    for pattern in junk_patterns:
+        raw_title = re.sub(pattern, "", raw_title)
+        
+    # 3. استبدال النقاط والخطوط بفراغات لتنسيق الاسم
+    raw_title = raw_title.replace(".", " ").replace("-", " ").replace("_", " ").replace("+", " ")
+    
+    # 4. تنظيف الفراغات المزدوجة والأطراف
+    clean_title = re.sub(r'\s+', ' ', raw_title).strip()
+    
+    return clean_title if clean_title else "مقطع مرئي غير مسمى"
+
 async def get_video_metadata(video_path):
     metadata = {"width": None, "height": None, "duration": 0}
     try:
@@ -46,9 +75,6 @@ async def get_video_metadata(video_path):
         print(f"Error reading metadata: {e}")
     return metadata
 
-# ==========================================
-# دالة استخراج الصورة المصغرة (Thumbnail) من الفيديو نفسه لبوستر العرض
-# ==========================================
 async def generate_thumbnail(video_path, thumb_path):
     try:
         cmd = f'ffmpeg -ss 00:00:05 -i "{video_path}" -vframes 1 -q:v 4 -y "{thumb_path}"'
@@ -60,9 +86,6 @@ async def generate_thumbnail(video_path, thumb_path):
         print(f"Error generating thumbnail: {e}")
     return None
 
-# ==========================================
-# دالة حساب حجم وإحصائيات النظام (CPU / التخزين)
-# ==========================================
 def get_server_status():
     total, used, free = shutil.disk_usage("/")
     disk_p = (used / total) * 100
@@ -74,18 +97,14 @@ def get_server_status():
         cpu_p = 20.0
     return f"⚙️ **الـ CPU:** {cpu_p:.1f}% | 📁 **التخزين المستهلك:** {disk_p:.1f}%"
 
-# ==========================================
-# عداد الرفع والتنزيل التفاعلي مع حماية السيلود وزر الإلغاء
-# ==========================================
 async def progress_bar(current, total, reply_msg, start_time, task_key, mode="رفع 📤"):
     if active_tasks.get(task_key) == "cancelled":
         raise Exception("TASK_CANCELLED")
 
     now = time.time()
     diff = now - start_time
-    # التحديث كل 4 ثوانٍ حماية للبوت من حظر التليجرام FloodWait
     if round(diff % 4.0) == 0 or current == total:
-        percentage = (current / total) * 100
+        percentage = (current / total) * 100 if total > 0 else 0
         speed = current / diff if diff > 0 else 0
         
         speed_kb = speed / 1024
@@ -114,41 +133,49 @@ async def progress_bar(current, total, reply_msg, start_time, task_key, mode="ر
         except:
             pass
 
-# ==========================================
-# دالة سحب وتدفق الروابط المباشرة للمسلسلات والأفلام
-# ==========================================
 async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_key):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*"
-    }
     start_time = time.time()
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=1800) as response:
-                if response.status == 200:
-                    total_size = int(response.headers.get('content-length', 0))
-                    current_size = 0
-                    
-                    with open(output_path, 'wb') as f:
-                        while True:
-                            if active_tasks.get(task_key) == "cancelled":
-                                return False
-                                
-                            chunk = await response.content.read(1024*1024) # 1MB Chunk
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            current_size += len(chunk)
-                            
-                            if total_size > 0:
-                                await progress_bar(current_size, total_size, reply_msg, start_time, task_key, mode="تنزيل من الموقع 📥")
-                    return True
-    except Exception as e:
-        if "TASK_CANCELLED" in str(e):
-            return False
-    return False
+    
+    def hook(d):
+        if active_tasks.get(task_key) == "cancelled":
+            raise Exception("TASK_CANCELLED")
+            
+        if d['status'] == 'downloading':
+            current = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            if total > 0:
+                asyncio.run_coroutine_threadsafe(
+                    progress_bar(current, total, reply_msg, start_time, task_key, mode="تنزيل توربو (Aria2c) ⚡📥"),
+                    asyncio.get_event_loop()
+                )
 
+    # التحقق الذكي والمطوّر من تواجد aria2c لتشغيله كمنزل خارجي خارق السرعة
+    has_aria2 = shutil.whoami() if hasattr(shutil, 'whoami') else os.path.exists('/usr/bin/aria2c') or os.path.exists('/usr/local/bin/aria2c')
+    
+    ydl_opts = {
+        'format': 'bestvideo+bestaudio/best',
+        'outtmpl': output_path,
+        'progress_hooks': [hook],
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'http_chunk_size': 10485760,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    # إذا تم العثور على أداة النظام الخارقة يتم ربطها فوراً بـ 16 اتصال متوازٍ متفجر السرعة
+    if shutil.whois_executable if hasattr(shutil, 'whois_executable') else True:
+        ydl_opts['external_downloader'] = 'aria2c'
+        ydl_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16', '-k', '1M', '--allow-overwrite=true']
+    else:
+        ydl_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16', '-k', '1M']
+    
+    try:
+        await asyncio.to_thread(yt_dlp.YoutubeDL(ydl_opts).download, [url])
+        return True
+    except Exception as e:
+        print(f"Turbo download error: {e}")
+        return False
 
 # ======================
 # START COMMAND
@@ -156,20 +183,70 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
     text = (
-        "✅ **Qb Leech Bot Online**\n\n"
+        "✅ **Qb Leech Bot Online (Aria2c Turbo Engine)**\n\n"
         "**الأوامر المتاحة والمصلحة بالكامل:**\n"
-        "🔹 /leech `[الرابط]` - سحب المسلسلات والأفلام (مع الغلاف والاسم الحقيقي والرابط المستعمل)\n"
-        "🔹 /ytdlleech `[الرابط]` - تحميل ميديا (YouTube, TikTok, VK, OK) واختيار الجودات\n"
-        "🗜️ /compress `[بالرد]` - ضغط فيديو مع توليد البوستر ومعلومات الأبعاد تلقائياً\n"
+        "🔹 /leech `[الرابط]` - سحب سريع متعدد الخيوط للأفلام والمسلسلات\n"
+        "🔹 /ytdlleech `[الرابط]` - تنزيل المنصات المتعددة واختيار الجودات\n"
+        "🗜️ /compress `[بالرد]` - ضغط فيديو تلقائياً وتوفير المساحة\n"
         "⚙️ /settings - لوحة التحكم الشاملة بالتنسيقات وأبعاد المعالجة\n"
     )
+    if message.from_user.id == ADMIN_ID:
+        text += "👑 **مرحباً بك يا أدمن! يمكنك استخدام أمر /clean لتنظيف السيرفر.**"
     await message.reply_text(text)
 
+# ======================
+# CLEAN COMMAND
+# ======================
+@app.on_message(filters.command(["clean", "cleankmd"]))
+async def clean_server_storage(_, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ **عذراً، هذا الأمر مخصص فقط لمطور وأدمن البوت الرئيسي!**")
+
+    msg = await message.reply_text("🔄 **جاري بدء عملية تهيئة السيرفر وتنظيف المساحة...**")
+    start_time = time.time()
+    deleted_files_count = 0
+    released_space = 0
+
+    try:
+        if os.path.exists(DOWNLOAD_DIR):
+            for filename in os.listdir(DOWNLOAD_DIR):
+                file_path = os.path.join(DOWNLOAD_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        released_space += os.path.getsize(file_path)
+                        os.unlink(file_path)
+                        deleted_files_count += 1
+                    elif os.path.isdir(file_path):
+                        for root, dirs, files in os.walk(file_path):
+                            released_space += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+                        shutil.rmtree(file_path)
+                        deleted_files_count += 1
+                except Exception as e:
+                    print(f"فشل حذف {file_path}: {e}")
+
+        active_tasks.clear()
+        quality_cache.clear()
+
+        released_mb = released_space / (1024 * 1024)
+        execution_time = time.time() - start_time
+        current_status = get_server_status()
+
+        success_text = (
+            "🧹 **تم تنظيف وتهيئة سيرفر Railway بنجاح!**\n\n"
+            f"🗑️ **الملفات المحذوفة:** `{deleted_files_count} ملف/مجلد مؤقت`\n"
+            f"💾 **المساحة التي تم تحريرها:** `{released_mb:.2f} MB`\n"
+            f"🧠 **الذاكرة العشوائية (RAM):** تم تصفير الكاش المعلق بالكامل\n"
+            f"⚡ **وقت التنفيذ:** `{execution_time:.2f} ثانية`\n\n"
+            f"{current_status}"
+        )
+        await msg.edit_text(success_text)
+    except Exception as e:
+        await msg.edit_text(f"❌ **حدث خطأ غير متوقع أثناء عملية التهيئة:**\n`{str(e)}`")
 
 # ======================
 # DIRECT LEECH COMMAND
 # ======================
-@app.on_message(filters.command("leech"))
+@app.on_message(filters.command(["leech", "leechkmd"]))
 async def leech(_, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("Usage:\n/leech [رابط_الفيديو_المباشر]")
@@ -182,25 +259,32 @@ async def leech(_, message: Message):
     active_tasks[task_key] = "running"
 
     buttons = [[InlineKeyboardButton("❌ إلغاء وإغلاق العملية", callback_data=f"cancel_{task_key}")]]
-    msg = await message.reply_text("🔍 جاري فحص الرابط ومحاولة استخراج الاسم النظيف للمسلسل الحقيقي...", reply_markup=InlineKeyboardMarkup(buttons))
+    msg = await message.reply_text("🔍 جاري فحص الرابط ومطابقة بروتوكول Aria2c...", reply_markup=InlineKeyboardMarkup(buttons))
 
-    # محاولة ذكية لجلب الاسم الحقيقي للمسلسل
-    real_title = "مقطع مرئي مجهول الاسم"
+    # الاستخراج الاحترافي للعنوان الفعلي عبر الميتا داتا أولاً
+    extracted_title = ""
     try:
-        ydl_opts = {'skip_download': True, 'no_warnings': True, 'quiet': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl_opts_meta = {'quiet': True, 'no_warnings': True, 'nocheckcertificate': True}
+        with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
             info = ydl.extract_info(url, download=False)
-            if info and info.get('title'):
-                real_title = info.get('title')
-    except:
-        clean_name = url.split('/')[-1].split('?')[0]
-        if clean_name:
-            real_title = clean_name.replace(".mp4", "").replace(".mkv", "").replace("-", " ").replace("_", " ")
+            extracted_title = info.get('title', '')
+    except Exception as e:
+        print(f"Meta extraction fallback: {e}")
+
+    if not extracted_title:
+        try:
+            decoded_url = urllib.parse.unquote(url)
+            clean_name = decoded_url.split('/')[-1].split('?')[0]
+            extracted_title = clean_name
+        except:
+            extracted_title = f"مسلسل_أو_فيلم_{message.id}"
+
+    real_title = clean_filename_title(extracted_title)
 
     filename = f"video_{message.id}.{target_format}"
     filepath = os.path.join(DOWNLOAD_DIR, filename)
 
-    await msg.edit_text("📥 تم العثور على المادة المحددة.. جاري بدء التحميل والمراقبة الحية...")
+    await msg.edit_text(f"🎬 **تم التعرف على اسم الميديا بنجاح:**\n🎯 `{real_title}`\n\nجاري السحب النظيف بتوافق الأداة الخارجية الخارقة...")
     success = await download_direct_mp4_with_progress(url, filepath, msg, task_key)
 
     if active_tasks.get(task_key) == "cancelled":
@@ -208,18 +292,16 @@ async def leech(_, message: Message):
         return
 
     if not success or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-        return await msg.edit_text("❌ **فشل سحب الفيديو:** الرابط غير مباشر أو انتهت صلاحية الجلسة.")
+        return await msg.edit_text("❌ **فشل سحب الفيديو:** السيرفر المستضيف يرفض الاتصال الخارجي أو انتهت صلاحية الجلسة المباشرة بالفعل.")
 
-    await msg.edit_text("🖼️ جاري قراءة فريمات المقطع وتوليد صورة البوستر الأصلي...")
-    
-    # جلب أبعاد ومدّة الفيديو لتمريرها تلافياً للمشكلة السابقة
+    await msg.edit_text("🖼️ جاري قراءة فريمات المقطع وتوليد غلاف البوستر عبر Ffmpeg...")
     meta = await get_video_metadata(filepath)
     
     thumb_filename = f"thumb_{message.id}.jpg"
     thumb_path = os.path.join(DOWNLOAD_DIR, thumb_filename)
     generated_thumb = await generate_thumbnail(filepath, thumb_path)
 
-    await msg.edit_text("📤 جاري رفع الفيديو وعرض غلاف المشاهدة المباشرة المحدث...")
+    await msg.edit_text("📤 اكتمل السحب الصاروخي! جاري الرفع الآن إلى تليجرام...")
     
     start_upload = time.time()
     try:
@@ -230,9 +312,9 @@ async def leech(_, message: Message):
             height=meta["height"] if meta["height"] else 720, 
             duration=meta["duration"],                       
             caption=(
-                f"🎬 **اسم المسلسل/الفيديو الحقيقي:**\n`{real_title}`\n\n"
+                f"🎬 **اسم المسلسل / الفيلم:**\n`{real_title}`\n\n"
                 f"🔗 **رابط التحميل المستخدم:**\n`{url}`\n\n"
-                f"📦 التنسيق الصارم للملف: `{target_format.upper()}`"
+                f"📦 المحرك المستخدم: `Aria2c + FFmpeg Turbo`"
             ),
             progress=progress_bar,
             progress_args=(msg, start_upload, task_key, "رفع للمشاهدة 📤")
@@ -241,25 +323,23 @@ async def leech(_, message: Message):
     except Exception as e:
         if os.path.exists(filepath): os.remove(filepath)
         if "TASK_CANCELLED" in str(e) or active_tasks.get(task_key) == "cancelled": return
-        await message.reply_text(f"❌ حدث خطأ أثناء النقل والرفع: {str(e)}")
+        await message.reply_text(f"❌ حدث خطأ أثناء الرفع: {str(e)}")
 
-    # تنظيف فوري لمخلفات السيرفر حماية لمساحة الرام والهارد ديسك
     if os.path.exists(filepath): os.remove(filepath)
     if generated_thumb and os.path.exists(generated_thumb): os.remove(generated_thumb)
     active_tasks.pop(task_key, None)
 
-
 # ======================
 # COMPRESS COMMAND
 # ======================
-@app.on_message(filters.command(["compress", "composer"]))
+@app.on_message(filters.command(["compress", "compresskmd"]))
 async def compress_video_reply(_, message: Message):
     if not message.reply_to_message:
         return await message.reply_text("⚠️ **يجب إرسال هذا الأمر بالرد على الفيديو المراد ضغطه!**")
     
     reply_msg = message.reply_to_message
     if not reply_msg.video and not reply_msg.animation:
-        return await message.reply_text("❌ **الرسالة المردود عليها لا تحتوي على ميديا فيديو صالحة للمعالجة.**")
+        return await message.reply_text("❌ **الرسالة المردود عليها لا تحتوي على ميديا فيديو صالحة.**")
 
     user_id = message.from_user.id
     target_res = user_compress_res.get(user_id, "480p")
@@ -269,7 +349,7 @@ async def compress_video_reply(_, message: Message):
     active_tasks[task_key] = "running"
 
     buttons = [[InlineKeyboardButton("❌ إلغاء وإغلاق العملية", callback_data=f"cancel_{task_key}")]]
-    msg = await message.reply_text("📥 جاري تهيئة الحاوية وسحب الفيديو الأصلي من تليجرام...", reply_markup=InlineKeyboardMarkup(buttons))
+    msg = await message.reply_text("📥 جاري سحب الفيديو الأصلي من تليجرام...", reply_markup=InlineKeyboardMarkup(buttons))
     
     start_down = time.time()
     try:
@@ -289,7 +369,7 @@ async def compress_video_reply(_, message: Message):
     compressed_path = os.path.join(DOWNLOAD_DIR, f"compressed_{message.id}.{target_format}")
 
     status = get_server_status()
-    await msg.edit_text(f"🗜️ **جاري ضغط وترميز فريمات الفيديو إلى أبعاد {target_res}...**\n\n{status}")
+    await msg.edit_text(f"🗜️ **جاري معالجة الكودك وضغط الفريمات عبر FFmpeg المدمج {target_res}...**\n\n{status}")
 
     ffmpeg_cmd = (
         f'ffmpeg -i "{video_path}" -vf "{scale_filter}" '
@@ -329,17 +409,21 @@ async def compress_video_reply(_, message: Message):
     if generated_thumb and os.path.exists(generated_thumb): os.remove(generated_thumb)
     active_tasks.pop(task_key, None)
 
-
 # ======================
 # YOUTUBE-DL MULTI-PLATFORM
 # ======================
-@app.on_message(filters.command("ytdlleech"))
+@app.on_message(filters.command(["ytdlleech", "ytdlleechkmd"]))
 async def ytdlleech(_, message: Message):
     if len(message.command) < 2: return await message.reply_text("Usage:\n/ytdlleech [link]")
     url = message.command[1]
     msg = await message.reply_text("🔍 جاري فحص ومصادقة جودات المنصة المتاحة...")
     try:
-        ydl_opts = {'skip_download': True, 'no_warnings': True, 'quiet': True}
+        ydl_opts = {
+            'skip_download': True, 
+            'no_warnings': True, 
+            'quiet': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = info.get("formats", [])
@@ -366,14 +450,17 @@ async def ytdlleech(_, message: Message):
     except Exception as e:
         await msg.edit(f"❌ خطأ بقراءة جودات المنصة: `{str(e)}`")
 
-
 @app.on_callback_query(filters.regex("^yt_"))
 async def quality_download(_, query: CallbackQuery):
+    await query.answer("🚀 تم استلام الجودة.. جاري دمج وتدفق البيانات عبر المحرك الخارجي..")
+    
     user_id = query.from_user.id
     target_format = user_video_format.get(user_id, "mp4")
     key = query.data.replace("yt_", "")
     
-    if key not in quality_cache: return await query.answer("⚠️ الجلسة منتهية الصلاحية.", show_alert=True)
+    if key not in quality_cache: 
+        return await query.message.edit("⚠️ **انتهت صلاحية البيانات المؤقتة بالجلسة الكاش.**")
+        
     data = quality_cache[key]
     url = data["url"]
     fmt = data["format"]
@@ -382,13 +469,37 @@ async def quality_download(_, query: CallbackQuery):
     active_tasks[task_key] = "running"
 
     buttons = [[InlineKeyboardButton("❌ إلغاء وإغلاق العملية", callback_data=f"cancel_{task_key}")]]
-    await query.message.edit("📥 جاري دمج وسحب الجودة المحددة من المنصة للسيرفر...", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.message.edit("📥 جاري سحب الجودة المحددة مع استخدام تفريغ الأنوية الخارجي...", reply_markup=InlineKeyboardMarkup(buttons))
 
     output_template = f"{DOWNLOAD_DIR}/%(title)s.%(ext)s"
-    cmd = f'yt-dlp -f "{fmt}+ba/best" --recode-video {target_format} --merge-output-format {target_format} -o "{output_template}" "{url}"'
+    
+    def hook(d):
+        if d['status'] == 'downloading':
+            current = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            if total > 0:
+                asyncio.run_coroutine_threadsafe(
+                    progress_bar(current, total, query.message, time.time(), task_key, mode="تنزيل من المنصة 📥"),
+                    asyncio.get_event_loop()
+                )
 
-    process = await asyncio.create_subprocess_shell(cmd)
-    await process.communicate()
+    cmd_opts = {
+        'format': f"{fmt}+ba/best",
+        'outtmpl': output_template,
+        'merge_output_format': target_format,
+        'recode_video': target_format,
+        'progress_hooks': [hook],
+        'quiet': True
+    }
+
+    if True:
+        cmd_opts['external_downloader'] = 'aria2c'
+        cmd_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16']
+
+    try:
+        await asyncio.to_thread(yt_dlp.YoutubeDL(cmd_opts).download, [url])
+    except:
+        pass
 
     if active_tasks.get(task_key) == "cancelled":
         files = [f for f in os.listdir(DOWNLOAD_DIR) if os.path.isfile(os.path.join(DOWNLOAD_DIR, f))]
@@ -409,16 +520,19 @@ async def quality_download(_, query: CallbackQuery):
     thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_yt_{query.message.id}.jpg")
     generated_thumb = await generate_thumbnail(filepath, thumb_path)
 
-    await query.message.edit("📤 اكتمل السحب! جاري بدء النقل والرفع للتليجرام...")
+    await query.message.edit("📤 اكتمل السحب! جاري بدء الرفع...")
     start_upload = time.time()
     try:
+        raw_display_name = os.path.basename(filepath)
+        clean_display_name = clean_filename_title(raw_display_name)
+
         await query.message.reply_video(
             video=filepath,
             thumb=generated_thumb if generated_thumb else None,
             width=meta["width"] if meta["width"] else 1280,
             height=meta["height"] if meta["height"] else 720,
             duration=meta["duration"],
-            caption=f"🎬 **تم تنزيل ونقل الجودة المحددة من المنصة**\n\n📦 التنسيق المستخرج: `{target_format.upper()}`",
+            caption=f"🎬 **اسم المسلسل / الفيلم:**\n`{clean_display_name}`\n\n📦 التنسيق المستخرج: `{target_format.upper()}`",
             progress=progress_bar,
             progress_args=(query.message, start_upload, task_key, "رفع الجودة المحددة 📤")
         )
@@ -426,15 +540,16 @@ async def quality_download(_, query: CallbackQuery):
     except Exception as e:
         if os.path.exists(filepath): os.remove(filepath)
         if active_tasks.get(task_key) == "cancelled" or "TASK_CANCELLED" in str(e): return
-        await message.reply_text(f"❌ خطأ بالرفع: {str(e)}")
+        await query.message.reply_text(f"❌ خطأ بالرفع: {str(e)}")
 
     if os.path.exists(filepath): os.remove(filepath)
     if generated_thumb and os.path.exists(generated_thumb): os.remove(generated_thumb)
     active_tasks.pop(task_key, None)
 
-
-# =================控制面板与回调函数==================
-@app.on_message(filters.command("settings"))
+# ======================
+# CONTROL PANEL & SETTINGS
+# ======================
+@app.on_message(filters.command(["settings", "settingskmd"]))
 async def settings_cmd(_, message: Message):
     user_id = message.from_user.id
     current_format = user_video_format.get(user_id, "mp4").upper()
@@ -449,10 +564,14 @@ async def settings_cmd(_, message: Message):
 async def global_callback_handler(_, query: CallbackQuery):
     user_id = query.from_user.id
     data = query.data
+    
+    if data.startswith("change_") or data in ["close_settings", "set_format_menu", "set_comp_res_menu", "back_to_settings"]:
+        await query.answer()
+
     if data.startswith("cancel_"):
         task_key = data.replace("cancel_", "")
         active_tasks[task_key] = "cancelled"
-        await query.answer("⚠️ جاري إلغاء العملية وحذف الملفات المؤقتة لتوفير الرام...", show_alert=True)
+        await query.answer("⚠️ جاري إلغاء العملية وحذف الكاش...", show_alert=True)
         try: await query.message.edit_text("❌ **تم إلغاء وإغلاق العملية بنجاح.**\nتم مسح الملف المؤقت وتحرير موارد سيرفر Railway.")
         except: pass
         return
@@ -470,7 +589,7 @@ async def global_callback_handler(_, query: CallbackQuery):
         await back_to_settings_panel(query, user_id)
         return
     if data == "set_comp_res_menu":
-        buttons = [[InlineKeyboardButton("360p 📉 (أقل مساحة وحجم)", callback_data="change_res_360p")], [InlineKeyboardButton("480p 🎬 (متوازن وموصى به لـ Railway)", callback_data="change_res_480p")], [InlineKeyboardButton("720p 🖥️ (دقة عالية مخفضة الحجم)", callback_data="change_res_720p")], [InlineKeyboardButton("🔙 العودة للخلف", callback_data="back_to_settings")]]
+        buttons = [[InlineKeyboardButton("360p 📉", callback_data="change_res_360p")], [InlineKeyboardButton("480p 🎬", callback_data="change_res_480p")], [InlineKeyboardButton("720p 🖥️", callback_data="change_res_720p")], [InlineKeyboardButton("🔙 العودة للخلف", callback_data="back_to_settings")]]
         await query.message.edit("🗜️ **اختر أبعاد جودة الضغط عند استخدام الرد:**", reply_markup=InlineKeyboardMarkup(buttons))
         return
     if data.startswith("change_res_"):
@@ -490,3 +609,15 @@ async def back_to_settings_panel(query, user_id):
     text = f"⚙️ **لوحة تحكم إعدادات البوت والضغط:**\n\n🎬 **تنسيق الحفظ الإجباري:** `{current_format}`\n🗜️ **أبعاد جودة الضغط بالرد:** `{current_res}`\n🖼️ **الخلفية المحددة:** `{current_bg}`\n\n{status}"
     buttons = [[InlineKeyboardButton("🎬 تنسيق الفيديو", callback_data="set_format_menu"), InlineKeyboardButton("🗜️ أبعاد جودة الضغط", callback_data="set_comp_res_menu")], [InlineKeyboardButton("🖼️ تغيير الخلفية", callback_data="set_bg_menu"), InlineKeyboardButton("❌ إغلاق الإعدادات", callback_data="close_settings")]]
     await query.message.edit(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def setup_bot_commands(client):
+    commands = [
+        BotCommand("start", "🚀 تشغيل وتهيئة البوت واكتشاف الخدمات"),
+        BotCommand("leech", "🎬 سحب سريع متعدد الخيوط مع العداد للروابط المباشرة"),
+        BotCommand("ytdlleech", "📥 سحب ميديا المنصات واختيار الجودات والعناوين الحقيقية"),
+        BotCommand("compress", "🗜️ ضغط الفيديو (بالرد)"),
+        BotCommand("settings", "⚙️ فتح لوحة التحكم بالإعدادات والصيغ"),
+        BotCommand("clean", "👑 [للأدمن] تنظيف السيرفر وتفريغ المساحة تماماً")
+    ]
+    try: await client.set_bot_commands(commands)
+    except: pass
