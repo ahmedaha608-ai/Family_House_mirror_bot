@@ -85,7 +85,7 @@ def bypass_and_get_clean_title(url):
                 if matches:
                     target_url = matches[0]
                 else:
-                    # محرك احتياطي ديناميكي: توليد الرابط بناءً على معرف الملف الفريد
+                    # محرك احتياطي ديناميكية: توليد الرابط بناءً على معرف الملف الفريد
                     file_id = url.split('/')[-2] if url.endswith('/') else url.split('/')[-1]
                     if file_id != "file.html":
                         target_url = f"https://krakenfiles.com/download/{file_id}"
@@ -203,6 +203,9 @@ async def progress_bar(current, total, reply_msg, start_time, task_key, mode="ر
         except:
             pass
 
+# =========================================================
+# 🔄 نظام المعالجة الثنائي (Dual-Engine) لحل مشكلة فشل السحب
+# =========================================================
 async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_key):
     start_time = time.time()
     
@@ -215,11 +218,32 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             if total > 0:
                 asyncio.run_coroutine_threadsafe(
-                    progress_bar(current, total, reply_msg, start_time, task_key, mode="تنزيل توربو (Aria2c) ⚡📥"),
+                    progress_bar(current, total, reply_msg, start_time, task_key, mode="تنزيل توربو ⚡📥"),
                     asyncio.get_event_loop()
                 )
 
-    ydl_opts = {
+    # 1. المحاولة الأولى: استخدام Aria2c الخارجي لسرعة التحميل المتعدد
+    ydl_opts_aria = {
+        'format': 'bestvideo+bestaudio/best',
+        'outtmpl': output_path,
+        'progress_hooks': [hook],
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'external_downloader': 'aria2c',
+        'external_downloader_args': ['-j', '16', '-x', '16', '-s', '16', '-k', '1M', '--allow-overwrite=true']
+    }
+    
+    try:
+        await asyncio.to_thread(yt_dlp.YoutubeDL(ydl_opts_aria).download, [url])
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 1048576:
+            return True
+    except:
+        pass
+
+    # 2. المحرك الاحتياطي: التحويل التلقائي والآمن للمحرك الداخلي لبايثون في حال عطل الأداة الخارجية
+    ydl_opts_native = {
         'format': 'bestvideo+bestaudio/best',
         'outtmpl': output_path,
         'progress_hooks': [hook],
@@ -228,15 +252,15 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
         'nocheckcertificate': True,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-
-    ydl_opts['external_downloader'] = 'aria2c'
-    ydl_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16', '-k', '1M', '--allow-overwrite=true']
     
     try:
-        await asyncio.to_thread(yt_dlp.YoutubeDL(ydl_opts).download, [url])
-        return True
+        await asyncio.to_thread(yt_dlp.YoutubeDL(ydl_opts_native).download, [url])
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 1048576:
+            return True
     except:
-        return False
+        pass
+        
+    return False
 
 # =========================================================
 # 🚀 الأوامر البرمجية (الخاص والمجموعات بشكل صارم وسريع)
@@ -246,7 +270,7 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
 @app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start(_, message: Message):
     text = (
-        "✅ **Qb Leech Bot Online (Kraken Name-Fix Engine)**\n\n"
+        "✅ **Qb Leech Bot Online (Kraken Dual-Engine)**\n\n"
         "**الأوامر المتاحة والمصلحة بالكامل:**\n"
         "🔹 /leech `[الرابط]` - سحب سريع مع اقتناص الاسم الحقيقي الذكي\n"
         "🔹 /ytdlleech `[الرابط]` - تنزيل المنصات واختيار الجودات\n"
@@ -339,13 +363,13 @@ async def leech(_, message: Message):
         except:
             page_extracted_title = f"مسلسل_أو_فيلم_{message.id}"
 
-    # تمرير الاسم عبر دالة التنظيف المعتمدة ليعود مثل: قلب مفتوح S01 E01
+    # تمرير الاسم عبر دالة التنظيف المعتمدة ليعود بشكل نقي
     real_title = clean_filename_title(page_extracted_title)
     
     filename = f"video_{message.id}.{target_format}"
     filepath = os.path.join(DOWNLOAD_DIR, filename)
 
-    await msg.edit_text(f"🎬 **الاسم المستخرج الحقيقي:**\n🎯 `{real_title}`\n\nجاري السحب عبر خيوط Aria2c الصاروخية...")
+    await msg.edit_text(f"🎬 **الاسم المستخرج الحقيقي:**\n🎯 `{real_title}`\n\nجاري السحب والتحميل الفعلي المتوازن...")
     success = await download_direct_mp4_with_progress(url, filepath, msg, task_key)
 
     if active_tasks.get(task_key) == "cancelled":
@@ -355,7 +379,7 @@ async def leech(_, message: Message):
     # فحص أمني لمنع رفع الملفات المعطلة أو الصفحات الوهمية أقل من 1 ميجابايت
     if not success or not os.path.exists(filepath) or os.path.getsize(filepath) < 1048576:
         if os.path.exists(filepath): os.remove(filepath)
-        return await msg.edit_text("❌ **فشلت عملية سحب ومعالجة حجم الفيديو الفعلي:** الموقع يطلب كود كابتشا أو انتهت صلاحية الجلسة.")
+        return await msg.edit_text("❌ **فشلت عملية سحب ومعالجة حجم الفيديو الفعلي:** تأكد من إرسال رابط العرض (View Link) وليس رابط التنزيل المباشر الموقوف.")
 
     await msg.edit_text("🖼️ جاري قراءة الأبعاد وتوليد بوستر العرض الذكي...")
     meta = await get_video_metadata(filepath)
@@ -376,7 +400,7 @@ async def leech(_, message: Message):
             duration=meta["duration"],                       
             caption=(
                 f"🎬 **اسم المسلسل / الفيلم:**\n`{real_title}`\n\n"
-                f"📦 المحرك المستخدم: `Bypass Kraken + Aria2c`"
+                f"📦 المحرك المستخدم: `Kraken Dual-Engine`"
             ),
             progress=progress_bar,
             progress_args=(msg, start_upload, task_key, "رفع للمشاهدة 📤")
@@ -555,10 +579,13 @@ async def quality_download(_, query: CallbackQuery):
         'merge_output_format': target_format,
         'recode_video': target_format,
         'progress_hooks': [hook],
-        'external_downloader': 'aria2c',
-        'external_downloader_args': ['-j', '16', '-x', '16', '-s', '16'],
         'quiet': True
     }
+
+    # التحقق من تثبيت aria2c برمجياً للمنصات
+    if os.path.exists("/usr/bin/aria2c") or os.path.exists("/usr/local/bin/aria2c"):
+        cmd_opts['external_downloader'] = 'aria2c'
+        cmd_opts['external_downloader_args'] = ['-j', '16', '-x', '16', '-s', '16']
 
     try:
         await asyncio.to_thread(yt_dlp.YoutubeDL(cmd_opts).download, [url])
