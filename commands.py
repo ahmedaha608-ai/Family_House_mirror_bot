@@ -193,6 +193,8 @@ async def progress_bar(current, total, reply_msg, start_time, task_key, mode="ر
             f"⚡ **جاري عملية الـ {mode}...**\n\n"
             f"📊 `[{bar}]` {percentage:.1f}%\n"
             f"📦 الحجم: `{current_mb:.1f} MB` / `{total_mb:.1f} MB`\n"
+            f"💾 الجيجا: `{downloaded_gb:.2f} GB` / `{total_gb:.2f} GB`\n"
+            f"⏳ الوقت المتبقي: `{eta_m}m {eta_s}s`\n"
             f"🚀 السرعة الحالية: `{speed_text}`\n\n"
             f"{status}"
         )
@@ -242,9 +244,13 @@ async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_ke
         'nocheckcertificate': True,
         'retries': 10,
         'fragment_retries': 10,
+        'concurrent_fragment_downloads': 8,
+        'buffersize': 10485760,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'external_downloader': 'aria2c',
-        'external_downloader_args': ['-j', '16', '-x', '16', '-s', '16', '-k', '1M', '--allow-overwrite=true']
+        'external_downloader_args': ['-j', '32', '-x', '32', '-s', '32', '-k', '1M', '--file-allocation=none', '--allow-overwrite=true'],
+        'concurrent_fragment_downloads': 8,
+        'http_chunk_size': 10485760
     }
     
     try:
