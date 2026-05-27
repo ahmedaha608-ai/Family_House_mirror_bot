@@ -39,18 +39,14 @@ def bypass_and_get_clean_title(url):
     default_title = ""
     target_url = url
     
+    # 1. إذا كان الرابط Krakenfiles، نستخدم المنطق الخاص بك (مستقر جداً)
     if "krakenfiles.com" in url:
         try:
-            # تحويل الرابط تلقائياً لنسخة العرض (view) لو تم تمرير رابط تحميل مباشر خاطئ
             url = url.replace("/download/", "/view/")
             parsed_url = urllib.parse.urlparse(url)
-            
-            # بناء اتصال متكامل يحاكي متصفح كروم حقيقي تماماً لتخطي جدران الحماية
             conn = http.client.HTTPSConnection(parsed_url.netloc, timeout=15)
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
                 'Referer': url
             }
             conn.request("GET", parsed_url.path, headers=headers)
@@ -58,42 +54,37 @@ def bypass_and_get_clean_title(url):
             html_content = response.read().decode('utf-8', errors='ignore')
             conn.close()
             
-            # 1. صيد اسم الملف الحقيقي من وسم الـ <title> بداخل الصفحة الأصلية
+            # استخراج العنوان
             title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
             if title_match:
-                raw_page_title = title_match.group(1)
-                # تنظيف الكلمات الثابتة للموقع من العناوين
-                raw_page_title = re.sub(r'(?i)-\s*KrakenFiles\.com', '', raw_page_title)
-                raw_page_title = re.sub(r'(?i)Free\s*File\s*Sharing', '', raw_page_title)
-                default_title = raw_page_title.strip()
+                default_title = re.sub(r'(?i)-\s*KrakenFiles\.com', '', title_match.group(1)).strip()
             
-            if not default_title:
-                meta_title = re.search(r'property="og:title"\s+content="(.*?)"', html_content)
-                if meta_title:
-                    default_title = meta_title.group(1)
-
-            # 2. استخراج التوكن أو رابط الميديا الفعلي المخفي داخل الصفحة
+            # استخراج الرابط
             stream_url_match = re.search(r'data-url=["\']([^"\']+?)["\']', html_content)
             if stream_url_match:
-                token_url = stream_url_match.group(1)
-                if token_url.startswith("//"):
-                    token_url = "https:" + token_url
-                target_url = token_url
-            else:
-                # محاولة صيد الروابط المباشرة لملفات الـ mp4 الصريحة بداخل الكود المصدري الخلفي
-                matches = re.findall(r'https://[^"\']+?\.mp4[^"\']*?', html_content)
-                if matches:
-                    target_url = matches[0]
-                else:
-                    # محرك احتياطي ديناميكية: توليد الرابط بناءً على معرف الملف الفريد
-                    file_id = url.split('/')[-2] if url.endswith('/') else url.split('/')[-1]
-                    if file_id != "file.html":
-                        target_url = f"https://krakenfiles.com/download/{file_id}"
-                        
+                target_url = "https:" + stream_url_match.group(1) if stream_url_match.group(1).startswith("//") else stream_url_match.group(1)
         except Exception as e:
             print(f"Kraken Engine Error: {e}")
+
+    # 2. التعديل الشامل: إذا لم يكن الرابط Kraken، نحاول جلب العنوان فقط ليظهر للمستخدم
+    else:
+        try:
+            # محاولة بسيطة لجلب عنوان الصفحة (Page Title) لأي رابط آخر
+            parsed_url = urllib.parse.urlparse(url)
+            conn = http.client.HTTPSConnection(parsed_url.netloc, timeout=10)
+            conn.request("GET", parsed_url.path, headers={'User-Agent': 'Mozilla/5.0'})
+            response = conn.getresponse()
+            if response.status == 200:
+                html = response.read().decode('utf-8', errors='ignore')
+                title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+                if title_match:
+                    default_title = title_match.group(1).strip()
+            conn.close()
+        except:
+            default_title = "فيديو غير معروف" # عنوان احتياطي
             
     return target_url, default_title
+
 
 # =========================================================
 # 🎬 دالة ذكية لتنظيف وتنسيق المسميات (عربي وأجنبي)
