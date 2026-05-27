@@ -203,27 +203,11 @@ async def progress_bar(current, total, reply_msg, start_time, task_key, mode="ر
         except:
             pass
 
-# =========================================================
-# 🔄 نظام المعالجة الثنائي (Dual-Engine) لحل مشكلة فشل السحب
-# =========================================================
-async def download_direct_mp4_with_progress(url, output_path, reply_msg, task_key):
-    start_time = time.time()
-    
-    def hook(d):
-        if active_tasks.get(task_key) == "cancelled":
-            raise Exception("TASK_CANCELLED")
-            
-        if d['status'] == 'downloading':
-            current = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            if total > 0:
-                safe_progress(
-    current,
-    total,
-    reply_msg,
-    start_time,
-    task_key,
-    "تنزيل توربو ⚡📥"
+def safe_progress(current, total, reply_msg, start_time, task_key, mode):
+    loop = asyncio.get_event_loop()
+    loop.call_soon_threadsafe(
+        lambda: asyncio.create_task(progress_bar(current, total, reply_msg, start_time, task_key, mode))
+    )
 )
     # 1. المحاولة الأولى: استخدام Aria2c الخارجي لسرعة التحميل المتعدد
     ydl_opts_aria = {
@@ -718,21 +702,4 @@ async def setup_bot_commands(client):
     ]
     try: await client.set_bot_commands(commands)
     except: pass
-        def safe_progress(current, total, reply_msg, start_time, task_key, mode):
-    try:
-        loop = asyncio.get_running_loop()
-        loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(
-                progress_bar(
-                    current,
-                    total,
-                    reply_msg,
-                    start_time,
-                    task_key,
-                    mode
-                )
-            )
-        )
-    except:
-        pass
-        
+    
